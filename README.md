@@ -9,6 +9,9 @@ Hardened nginx reverse proxy that adds **HTTP Basic Auth**, **per-IP rate limiti
 | Path | Rate limit | Body limit | Why |
 |---|---|---|---|
 | `/api/send` | 30 req/s per IP | 4 KB | Tracking data ingestion |
+| `/api/batch` | 30 req/s per IP | 16 KB | Batched tracking ingestion |
+| `/p/*` | 30 req/s per IP | — | Tracking pixel collector |
+| `/q/*` | 30 req/s per IP | — | Tracked link collector |
 | `/script.js`, `/umami.js`, `/tracker.js` | 30 req/s per IP | — | Tracking script |
 | `/share/*` | 20 req/s per IP | — | Shared dashboard links |
 | `/health` | — | — | Railway health check |
@@ -25,11 +28,13 @@ Hardened nginx reverse proxy that adds **HTTP Basic Auth**, **per-IP rate limiti
 
 | Path | Rate limit | Body limit |
 |---|---|---|
-| `/api/*` (except login + send) | 20 req/s per IP | 64 KB |
+| `/api/*` (except login + public collector routes) | 20 req/s per IP | 64 KB |
 
 ### Hardening measures
 
-- **Real client IP extraction**: Rate limits key on `X-Forwarded-For`, not Railway's internal proxy IP
+- **Collector bypass closed**: `/api/batch` now sits behind the same public collector policy instead of falling through to the generic `/api/*` block
+- **Public collector coverage**: Standard Umami collectors (`/api/send`, `/api/batch`, `/p/*`, `/q/*`) stay reachable without breaking dashboard protection
+- **Sanitized upstream forwarding headers**: nginx validates and forwards a single client IP, and preserves Railway's original `X-Forwarded-Proto` value instead of the internal HTTP hop
 - **`server_tokens off`**: Hides nginx version from `Server` header and error pages
 - **Security headers**: `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy`, `Permissions-Policy`
 - **Proxy timeouts**: 10s connect, 30s read/send — prevents slowloris-style stalling
@@ -39,7 +44,8 @@ Hardened nginx reverse proxy that adds **HTTP Basic Auth**, **per-IP rate limiti
 ### Known limitations
 
 - **`/api/*` without Basic Auth**: Umami's frontend JS doesn't reliably forward Basic Auth on fetch() calls, so the API relies on Umami's own JWT session auth. If Umami has an auth bypass zero-day, the API is exposed.
-- **X-Forwarded-For spoofing**: The first IP in `X-Forwarded-For` is trusted for rate limiting. Railway's edge should always set this correctly, but be aware of this in other environments.
+- **Railway-specific IP trust**: The first `X-Forwarded-For` hop is treated as authoritative because Railway sits in front of the container. Do not reuse this config unchanged on other platforms.
+- **Custom Umami path overrides**: If you use non-default `COLLECT_API_ENDPOINT` or custom tracker script names beyond `/script.js`, `/umami.js`, and `/tracker.js`, mirror those paths in nginx too.
 - **No WAF**: This proxy doesn't inspect request bodies for SQL injection, XSS, etc. For that level of protection, consider Cloudflare or a dedicated WAF in front.
 
 ---
