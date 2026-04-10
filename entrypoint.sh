@@ -61,10 +61,7 @@ if [ "$REQUIRE_ALLOWLIST" = "1" ]; then
 
   OLD_IFS=$IFS
   IFS=','
-  set -- $ADMIN_ALLOW_CIDRS
-  IFS=$OLD_IFS
-
-  for cidr in "$@"; do
+  for cidr in $ADMIN_ALLOW_CIDRS; do
     cidr="$(echo "$cidr" | xargs)"
 
     if [ -z "$cidr" ]; then
@@ -78,6 +75,7 @@ if [ "$REQUIRE_ALLOWLIST" = "1" ]; then
 
     echo "$cidr 1;" >> /etc/nginx/admin-allow.geo
   done
+  IFS=$OLD_IFS
 fi
 
 # ── Template the upstream address into the selected nginx config ──
