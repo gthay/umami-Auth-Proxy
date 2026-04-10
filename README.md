@@ -1,97 +1,152 @@
-# Umami Auth Proxy for Railway
+# Umami Proxy for Railway
 
-Hardened nginx reverse proxy that adds **HTTP Basic Auth**, **per-IP rate limiting**, and **request size caps** in front of your Umami dashboard, while keeping the tracking endpoints public.
+Single-repo nginx proxy image for Railway that can run in three modes:
 
-## Security model
+- `collector`: public tracking surface only
+- `admin`: protected dashboard and admin API
+- `combined`: legacy single-host mode
 
-### What stays public (no auth)
+For the split deployment, run **two Railway services from this same repo**:
 
-| Path | Rate limit | Body limit | Why |
+- one service with `PROXY_MODE=collector`
+- one service with `PROXY_MODE=admin`
+
+Both talk to the same private Umami service over Railway private networking.
+
+## Why Split The Hostnames
+
+The public tracking host only needs collector routes. The admin host needs the dashboard, `/_next/*`, and privileged `/api/*`.
+
+If you expose both on one hostname, most of Umami's authenticated API surface is still internet-reachable. Splitting the hostnames lets the public host deny everything except collectors, while the admin host protects the full dashboard and admin API.
+
+## Modes
+
+| `PROXY_MODE` | Purpose | Auth required | Public routes |
 |---|---|---|---|
-| `/api/send` | 30 req/s per IP | 4 KB | Tracking data ingestion |
-| `/api/batch` | 30 req/s per IP | 16 KB | Batched tracking ingestion |
-| `/p/*` | 30 req/s per IP | — | Tracking pixel collector |
-| `/q/*` | 30 req/s per IP | — | Tracked link collector |
-| `/script.js`, `/umami.js`, `/tracker.js` | 30 req/s per IP | — | Tracking script |
-| `/share/*` | 20 req/s per IP | — | Shared dashboard links |
-| `/health` | — | — | Railway health check |
-| `/_next/*`, `/favicon.ico`, `/site.webmanifest` | — | — | Static assets |
+| `collector` | Public tracking endpoint | No | `/script.js`, `/umami.js`, `/tracker.js`, `/api/send`, `/api/batch`, `/p/*`, `/q/*`, `/health` |
+| `admin` | Protected dashboard and admin API | Yes | `/health` only |
+| `combined` | Backward-compatible single-host mode | Yes | Collector routes plus protected dashboard |
 
-### What requires HTTP Basic Auth
+`combined` is kept as a migration fallback. For the stronger setup, use `collector` + `admin`.
 
-| Path | Rate limit | Body limit | Purpose |
-|---|---|---|---|
-| `/api/auth/login` | **2 req/s per IP** | 1 KB | Umami login — tightest limit |
-| `/` (all dashboard pages) | 20 req/s per IP | 8 KB | Dashboard UI |
+## Security Model
 
-### What is protected by Umami's own JWT
+### `collector` mode
 
-| Path | Rate limit | Body limit |
+- Public collector routes are rate-limited.
+- All non-collector paths return `404`.
+- No dashboard pages or privileged `/api/*` routes are exposed.
+
+### `admin` mode
+
+- HTTP Basic Auth protects the full Umami app surface.
+- `/api/*`, `/_next/*`, pages, and assets are all behind the same auth boundary.
+- `/api/auth/login` gets a tighter rate limit than the rest of the app.
+
+### Common hardening
+
+- Client IP is extracted from the first `X-Forwarded-For` hop and validated before use.
+- `X-Forwarded-Proto` preserves Railway's original upstream protocol instead of nginx's internal HTTP hop.
+- `server_tokens off`
+- Security headers on all responses
+- Proxy timeouts
+- `UMAMI_HOST` format validation before templating
+
+## Railway Deployment
+
+### 1. Keep Umami private
+
+On the Umami Railway service:
+
+- remove any public domain
+- keep private networking enabled
+
+### 2. Create two proxy services from this repo
+
+Create both in the same Railway project:
+
+- `umami-collector-proxy`
+- `umami-admin-proxy`
+
+Both should point at the same repo.
+
+### 3. Set environment variables
+
+#### Collector proxy
+
+| Variable | Example | Notes |
 |---|---|---|
-| `/api/*` (except login + public collector routes) | 20 req/s per IP | 64 KB |
+| `PROXY_MODE` | `collector` | Required |
+| `UMAMI_HOST` | `umami.railway.internal:3000` | Required |
 
-### Hardening measures
+#### Admin proxy
 
-- **Collector bypass closed**: `/api/batch` now sits behind the same public collector policy instead of falling through to the generic `/api/*` block
-- **Public collector coverage**: Standard Umami collectors (`/api/send`, `/api/batch`, `/p/*`, `/q/*`) stay reachable without breaking dashboard protection
-- **Sanitized upstream forwarding headers**: nginx validates and forwards a single client IP, and preserves Railway's original `X-Forwarded-Proto` value instead of the internal HTTP hop
-- **`server_tokens off`**: Hides nginx version from `Server` header and error pages
-- **Security headers**: `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy`, `Permissions-Policy`
-- **Proxy timeouts**: 10s connect, 30s read/send — prevents slowloris-style stalling
-- **Input validation**: `UMAMI_HOST` is validated against `host:port` format before templating
-- **No credentials in logs**: Username and upstream host are not logged
-
-### Known limitations
-
-- **`/api/*` without Basic Auth**: Umami's frontend JS doesn't reliably forward Basic Auth on fetch() calls, so the API relies on Umami's own JWT session auth. If Umami has an auth bypass zero-day, the API is exposed.
-- **Railway-specific IP trust**: The first `X-Forwarded-For` hop is treated as authoritative because Railway sits in front of the container. Do not reuse this config unchanged on other platforms.
-- **Custom Umami path overrides**: If you use non-default `COLLECT_API_ENDPOINT` or custom tracker script names beyond `/script.js`, `/umami.js`, and `/tracker.js`, mirror those paths in nginx too.
-- **No WAF**: This proxy doesn't inspect request bodies for SQL injection, XSS, etc. For that level of protection, consider Cloudflare or a dedicated WAF in front.
-
----
-
-## Deploy on Railway
-
-### 1. Add a new service in your Railway project
-
-In the same project where your Umami template is running:
-**"+ New"** → **"GitHub Repo"** → select the repo
-
-### 2. Set environment variables on the proxy service
-
-| Variable | Value | Example |
+| Variable | Example | Notes |
 |---|---|---|
-| `AUTH_USER` | Your chosen username | `admin` |
-| `AUTH_PASS` | A strong password | `s3cureP@ssw0rd!` |
-| `UMAMI_HOST` | Umami's internal hostname + port | `umami.railway.internal:8080` |
+| `PROXY_MODE` | `admin` | Required |
+| `UMAMI_HOST` | `umami.railway.internal:3000` | Required |
+| `AUTH_USER` | `admin` | Required |
+| `AUTH_PASS` | `s3cureP@ssw0rd!` | Required |
 
-> **Finding UMAMI_HOST:** Click on the Umami service → Settings → Networking. Check the private DNS name and the port Umami is listening on (visible in Umami's deploy logs, e.g. `http://[::]:8080`).
+#### Legacy single-host mode
 
-### 3. Configure networking
+| Variable | Example | Notes |
+|---|---|---|
+| `PROXY_MODE` | `combined` | Optional, default if unset |
+| `UMAMI_HOST` | `umami.railway.internal:3000` | Required |
+| `AUTH_USER` | `admin` | Required |
+| `AUTH_PASS` | `s3cureP@ssw0rd!` | Required |
 
-**On the proxy service:**
-- Settings → Networking → **Generate Domain** (public URL)
+### 4. Give each proxy its own public domain
 
-**On the Umami service:**
-- Settings → Networking → **Remove the public domain**
-- Ensure **Private Networking** is enabled
+Recommended DNS layout:
 
-### 4. Update your tracking script
+- `collect.example.com` -> collector proxy
+- `admin.example.com` -> admin proxy
+
+### 5. Use the collector hostname in your tracking snippet
 
 ```html
-<script defer src="https://your-proxy.up.railway.app/script.js"
+<script defer src="https://collect.example.com/script.js"
         data-website-id="your-website-id"></script>
 ```
 
----
+Use the collector hostname explicitly. In split mode, do **not** rely on the dashboard origin for the tracking snippet unless you have separately configured Umami to emit the collector host.
 
-## Local testing
+## Local Examples
+
+### Collector mode
 
 ```bash
 docker build -t umami-proxy .
 docker run -p 8080:8080 \
+  -e PROXY_MODE=collector \
+  -e UMAMI_HOST=host.docker.internal:3000 \
+  umami-proxy
+```
+
+### Admin mode
+
+```bash
+docker build -t umami-proxy .
+docker run -p 8080:8080 \
+  -e PROXY_MODE=admin \
   -e AUTH_USER=admin \
   -e AUTH_PASS=testpass \
   -e UMAMI_HOST=host.docker.internal:3000 \
   umami-proxy
 ```
+
+## Files
+
+- `nginx.conf`: combined legacy mode
+- `nginx.admin.conf`: protected admin host
+- `nginx.collect.conf`: public collector host
+- `entrypoint.sh`: mode selection and config templating
+
+## Limitations
+
+- Public collectors are still public. This design reduces privileged attack surface; it does not stop fake analytics submission.
+- Railway-specific forwarding assumptions should not be copied unchanged to other platforms.
+- If you need public share links, they are not exposed in `collector` mode today. Keep them on the admin host or add a separate public-share mode intentionally.
+- This is not a WAF. Collector routes are still application-exposed.
