@@ -48,6 +48,7 @@ If you expose both on one hostname, most of Umami's authenticated API surface is
 
 - Client IP is extracted from the first `X-Forwarded-For` hop and validated before use.
 - `X-Forwarded-Proto` preserves Railway's original upstream protocol instead of nginx's internal HTTP hop.
+- Startup now runs `nginx -t` after rendering the selected config and generated include files.
 - `server_tokens off`
 - Security headers on all responses
 - Proxy timeouts
@@ -79,6 +80,8 @@ Both should point at the same repo.
 |---|---|---|
 | `PROXY_MODE` | `collector` | Required |
 | `UMAMI_HOST` | `umami.railway.internal:3000` | Required |
+| `PUBLIC_TRACKER_SCRIPT_PATHS` | `/stats.js,/analytics.js` | Optional extra public tracker script aliases |
+| `PUBLIC_COLLECT_PATHS` | `/collect,/ingest` | Optional extra public collector paths that proxy to Umami |
 
 #### Admin proxy
 

@@ -2,6 +2,8 @@
 set -e
 
 PROXY_MODE="${PROXY_MODE:-combined}"
+PUBLIC_TRACKER_SCRIPT_PATHS="${PUBLIC_TRACKER_SCRIPT_PATHS:-}"
+PUBLIC_COLLECT_PATHS="${PUBLIC_COLLECT_PATHS:-}"
 
 if [ -z "$UMAMI_HOST" ]; then
   echo "ERROR: UMAMI_HOST environment variable must be set (e.g. umami.railway.internal:3000)."
@@ -50,6 +52,37 @@ if [ "$REQUIRE_AUTH" = "1" ]; then
   chmod 640 /etc/nginx/.htpasswd
 fi
 
+add_collector_path() {
+  path="$1"
+  kind="$2"
+
+  case "$kind" in
+    tracker)
+      cat >> /etc/nginx/generated/collector-extra-locations.conf <<EOF
+location = $path {
+    limit_req zone=tracking_zone burst=10 nodelay;
+
+    proxy_pass http://umami;
+    include /etc/nginx/includes/common-proxy-headers.conf;
+}
+
+EOF
+      ;;
+    collect)
+      cat >> /etc/nginx/generated/collector-extra-locations.conf <<EOF
+location = $path {
+    limit_req zone=tracking_zone burst=20 nodelay;
+    client_max_body_size 4k;
+
+    proxy_pass http://umami;
+    include /etc/nginx/includes/common-proxy-headers.conf;
+}
+
+EOF
+      ;;
+  esac
+}
+
 if [ "$REQUIRE_ALLOWLIST" = "1" ]; then
   if [ -z "$ADMIN_ALLOW_CIDRS" ]; then
     echo "ERROR: ADMIN_ALLOW_CIDRS must be set for PROXY_MODE=$PROXY_MODE."
@@ -78,11 +111,45 @@ if [ "$REQUIRE_ALLOWLIST" = "1" ]; then
   IFS=$OLD_IFS
 fi
 
+: > /etc/nginx/generated/collector-extra-locations.conf
+
+for spec in "tracker:$PUBLIC_TRACKER_SCRIPT_PATHS" "collect:$PUBLIC_COLLECT_PATHS"; do
+  kind="${spec%%:*}"
+  values="${spec#*:}"
+
+  [ -z "$values" ] && continue
+
+  OLD_IFS=$IFS
+  IFS=','
+  for path in $values; do
+    path="$(echo "$path" | xargs)"
+
+    if [ -z "$path" ]; then
+      continue
+    fi
+
+    case "$path" in
+      /*) ;;
+      *) path="/$path" ;;
+    esac
+
+    if ! echo "$path" | grep -qE '^/[A-Za-z0-9._~!$&'"'"'\"'\"'()*+,;=:@/%-]+$'; then
+      echo "ERROR: Invalid public path: $path"
+      exit 1
+    fi
+
+    add_collector_path "$path" "$kind"
+  done
+  IFS=$OLD_IFS
+done
+
 # ── Template the upstream address into the selected nginx config ──
 # Using awk instead of sed to avoid injection via delimiter characters
 awk -v host="$UMAMI_HOST" '{gsub(/UMAMI_UPSTREAM/, host); print}' \
   "$NGINX_TEMPLATE" > /etc/nginx/nginx.conf.tmp \
   && mv /etc/nginx/nginx.conf.tmp /etc/nginx/nginx.conf
+
+nginx -t -c /etc/nginx/nginx.conf
 
 echo "Proxy starting (mode=$PROXY_MODE, upstream configured)"
 
