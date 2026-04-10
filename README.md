@@ -24,7 +24,7 @@ If you expose both on one hostname, most of Umami's authenticated API surface is
 | `PROXY_MODE` | Purpose | Auth required | Public routes |
 |---|---|---|---|
 | `collector` | Public tracking endpoint | No | `/script.js`, `/umami.js`, `/tracker.js`, `/api/send`, `/api/batch`, `/p/*`, `/q/*`, `/health` |
-| `admin` | Protected dashboard and admin API | Yes | `/health` only |
+| `admin` | Protected dashboard and admin API | IP allowlist | `/health` only |
 | `combined` | Backward-compatible single-host mode | Yes | Collector routes plus protected dashboard |
 
 `combined` is kept as a migration fallback. For the stronger setup, use `collector` + `admin`.
@@ -39,9 +39,10 @@ If you expose both on one hostname, most of Umami's authenticated API surface is
 
 ### `admin` mode
 
-- HTTP Basic Auth protects the full Umami app surface.
+- An nginx IP/CIDR allowlist protects the full Umami app surface.
 - `/api/*`, `/_next/*`, pages, and assets are all behind the same auth boundary.
 - `/api/auth/login` gets a tighter rate limit than the rest of the app.
+- Set `ADMIN_ALLOW_CIDRS` to a comma-separated list of allowed client IPs or CIDR ranges.
 
 ### Common hardening
 
@@ -85,8 +86,7 @@ Both should point at the same repo.
 |---|---|---|
 | `PROXY_MODE` | `admin` | Required |
 | `UMAMI_HOST` | `umami.railway.internal:3000` | Required |
-| `AUTH_USER` | `admin` | Required |
-| `AUTH_PASS` | `s3cureP@ssw0rd!` | Required |
+| `ADMIN_ALLOW_CIDRS` | `203.0.113.10,198.51.100.0/24` | Required |
 
 #### Legacy single-host mode
 
@@ -131,8 +131,7 @@ docker run -p 8080:8080 \
 docker build -t umami-proxy .
 docker run -p 8080:8080 \
   -e PROXY_MODE=admin \
-  -e AUTH_USER=admin \
-  -e AUTH_PASS=testpass \
+  -e ADMIN_ALLOW_CIDRS=203.0.113.10 \
   -e UMAMI_HOST=host.docker.internal:3000 \
   umami-proxy
 ```
@@ -148,5 +147,6 @@ docker run -p 8080:8080 \
 
 - Public collectors are still public. This design reduces privileged attack surface; it does not stop fake analytics submission.
 - Railway-specific forwarding assumptions should not be copied unchanged to other platforms.
+- `admin` mode is only practical if you have stable client IPs or ranges. If your IP changes often, you will need to update `ADMIN_ALLOW_CIDRS` and redeploy.
 - If you need public share links, they are not exposed in `collector` mode today. Keep them on the admin host or add a separate public-share mode intentionally.
 - This is not a WAF. Collector routes are still application-exposed.

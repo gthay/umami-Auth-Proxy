@@ -19,14 +19,17 @@ case "$PROXY_MODE" in
   combined)
     NGINX_TEMPLATE="/etc/nginx/templates/nginx.conf"
     REQUIRE_AUTH=1
+    REQUIRE_ALLOWLIST=0
     ;;
   admin)
     NGINX_TEMPLATE="/etc/nginx/templates/nginx.admin.conf"
-    REQUIRE_AUTH=1
+    REQUIRE_AUTH=0
+    REQUIRE_ALLOWLIST=1
     ;;
   collector)
     NGINX_TEMPLATE="/etc/nginx/templates/nginx.collect.conf"
     REQUIRE_AUTH=0
+    REQUIRE_ALLOWLIST=0
     ;;
   *)
     echo "ERROR: PROXY_MODE must be one of: combined, admin, collector."
@@ -45,6 +48,36 @@ if [ "$REQUIRE_AUTH" = "1" ]; then
   htpasswd -cb /etc/nginx/.htpasswd "$AUTH_USER" "$AUTH_PASS"
   chown root:nginx /etc/nginx/.htpasswd
   chmod 640 /etc/nginx/.htpasswd
+fi
+
+if [ "$REQUIRE_ALLOWLIST" = "1" ]; then
+  if [ -z "$ADMIN_ALLOW_CIDRS" ]; then
+    echo "ERROR: ADMIN_ALLOW_CIDRS must be set for PROXY_MODE=$PROXY_MODE."
+    echo "       Example: 203.0.113.10,198.51.100.0/24"
+    exit 1
+  fi
+
+  : > /etc/nginx/admin-allow.geo
+
+  OLD_IFS=$IFS
+  IFS=','
+  set -- $ADMIN_ALLOW_CIDRS
+  IFS=$OLD_IFS
+
+  for cidr in "$@"; do
+    cidr="$(echo "$cidr" | xargs)"
+
+    if [ -z "$cidr" ]; then
+      continue
+    fi
+
+    if ! echo "$cidr" | grep -qE '^[0-9A-Fa-f:.]+(/[0-9]{1,3})?$'; then
+      echo "ERROR: Invalid CIDR/IP in ADMIN_ALLOW_CIDRS: $cidr"
+      exit 1
+    fi
+
+    echo "$cidr 1;" >> /etc/nginx/admin-allow.geo
+  done
 fi
 
 # ── Template the upstream address into the selected nginx config ──
