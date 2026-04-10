@@ -22,7 +22,8 @@ fi
 # ── Generate .htpasswd from env vars ──
 echo "Generating .htpasswd..."
 htpasswd -cb /etc/nginx/.htpasswd "$AUTH_USER" "$AUTH_PASS"
-chmod 600 /etc/nginx/.htpasswd
+chown root:nginx /etc/nginx/.htpasswd
+chmod 640 /etc/nginx/.htpasswd
 
 # ── Template the upstream address into nginx.conf ──
 # Using awk instead of sed to avoid injection via delimiter characters
