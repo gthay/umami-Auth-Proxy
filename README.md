@@ -46,25 +46,22 @@ Hardened nginx reverse proxy that adds **HTTP Basic Auth**, **per-IP rate limiti
 
 ## Deploy on Railway
 
-### 1. Push this folder to a GitHub repo
-
-### 2. Add a new service in your Railway project
+### 1. Add a new service in your Railway project
 
 In the same project where your Umami template is running:
 **"+ New"** → **"GitHub Repo"** → select the repo
 
-### 3. Set environment variables on the proxy service
+### 2. Set environment variables on the proxy service
 
 | Variable | Value | Example |
 |---|---|---|
 | `AUTH_USER` | Your chosen username | `admin` |
 | `AUTH_PASS` | A strong password | `s3cureP@ssw0rd!` |
 | `UMAMI_HOST` | Umami's internal hostname + port | `umami.railway.internal:8080` |
-| `PORT` | Must be `8080` | `8080` |
 
 > **Finding UMAMI_HOST:** Click on the Umami service → Settings → Networking. Check the private DNS name and the port Umami is listening on (visible in Umami's deploy logs, e.g. `http://[::]:8080`).
 
-### 4. Configure networking
+### 3. Configure networking
 
 **On the proxy service:**
 - Settings → Networking → **Generate Domain** (public URL)
@@ -73,7 +70,7 @@ In the same project where your Umami template is running:
 - Settings → Networking → **Remove the public domain**
 - Ensure **Private Networking** is enabled
 
-### 5. Update your tracking script
+### 4. Update your tracking script
 
 ```html
 <script defer src="https://your-proxy.up.railway.app/script.js"
