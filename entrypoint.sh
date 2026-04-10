@@ -12,14 +12,25 @@ if [ -z "$UMAMI_HOST" ]; then
   exit 1
 fi
 
+# ── Validate UMAMI_HOST format (host:port, no special chars) ──
+if ! echo "$UMAMI_HOST" | grep -qE '^[a-zA-Z0-9._-]+:[0-9]+$'; then
+  echo "ERROR: UMAMI_HOST must be in host:port format (e.g. umami.railway.internal:3000)."
+  echo "       Got: $UMAMI_HOST"
+  exit 1
+fi
+
 # ── Generate .htpasswd from env vars ──
-echo "Generating .htpasswd for user: $AUTH_USER"
+echo "Generating .htpasswd..."
 htpasswd -cb /etc/nginx/.htpasswd "$AUTH_USER" "$AUTH_PASS"
+chmod 600 /etc/nginx/.htpasswd
 
 # ── Template the upstream address into nginx.conf ──
-sed -i "s|UMAMI_UPSTREAM|${UMAMI_HOST}|g" /etc/nginx/nginx.conf
+# Using awk instead of sed to avoid injection via delimiter characters
+awk -v host="$UMAMI_HOST" '{gsub(/UMAMI_UPSTREAM/, host); print}' \
+  /etc/nginx/nginx.conf > /etc/nginx/nginx.conf.tmp \
+  && mv /etc/nginx/nginx.conf.tmp /etc/nginx/nginx.conf
 
-echo "Proxy starting → upstream: $UMAMI_HOST"
+echo "Proxy starting (upstream configured)"
 
 # ── Hand off to nginx ──
 exec "$@"

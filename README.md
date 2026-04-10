@@ -1,25 +1,46 @@
 # Umami Auth Proxy for Railway
 
-Nginx reverse proxy that adds **HTTP Basic Auth** and **rate limiting** in front of your Umami dashboard, while keeping the tracking endpoints public.
+Hardened nginx reverse proxy that adds **HTTP Basic Auth**, **per-IP rate limiting**, and **request size caps** in front of your Umami dashboard, while keeping the tracking endpoints public.
 
-## What stays public (no auth)
+## Security model
 
-| Path | Purpose |
-|---|---|
-| `/script.js`, `/umami.js`, `/tracker.js` | Tracking script |
-| `/api/send` | Event collection endpoint |
-| `/share/*` | Shared dashboard links |
-| `/health` | Health check for Railway |
+### What stays public (no auth)
 
-## What gets protected
+| Path | Rate limit | Body limit | Why |
+|---|---|---|---|
+| `/api/send` | 30 req/s per IP | 4 KB | Tracking data ingestion |
+| `/script.js`, `/umami.js`, `/tracker.js` | 30 req/s per IP | — | Tracking script |
+| `/share/*` | 20 req/s per IP | — | Shared dashboard links |
+| `/health` | — | — | Railway health check |
+| `/_next/*`, `/favicon.ico`, `/site.webmanifest` | — | — | Static assets |
 
-Everything else — the dashboard UI, all other API routes, and the Umami login endpoint (which gets an extra-tight rate limit).
+### What requires HTTP Basic Auth
 
-## Rate limits
+| Path | Rate limit | Body limit | Purpose |
+|---|---|---|---|
+| `/api/auth/login` | **2 req/s per IP** | 1 KB | Umami login — tightest limit |
+| `/` (all dashboard pages) | 20 req/s per IP | 8 KB | Dashboard UI |
 
-- **Login** (`/api/auth/login`): 5 req/s per IP, burst 10
-- **Dashboard** (everything else): 20 req/s per IP, burst 40
-- Exceeding the limit returns HTTP `429 Too Many Requests`
+### What is protected by Umami's own JWT
+
+| Path | Rate limit | Body limit |
+|---|---|---|
+| `/api/*` (except login + send) | 20 req/s per IP | 64 KB |
+
+### Hardening measures
+
+- **Real client IP extraction**: Rate limits key on `X-Forwarded-For`, not Railway's internal proxy IP
+- **`server_tokens off`**: Hides nginx version from `Server` header and error pages
+- **Security headers**: `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy`, `Permissions-Policy`
+- **Proxy timeouts**: 10s connect, 30s read/send — prevents slowloris-style stalling
+- **Input validation**: `UMAMI_HOST` is validated against `host:port` format before templating
+- **No credentials in logs**: Username and upstream host are not logged
+
+### Known limitations
+
+- **`/api/*` without Basic Auth**: Umami's frontend JS doesn't reliably forward Basic Auth on fetch() calls, so the API relies on Umami's own JWT session auth. If Umami has an auth bypass zero-day, the API is exposed.
+- **X-Forwarded-For spoofing**: The first IP in `X-Forwarded-For` is trusted for rate limiting. Railway's edge should always set this correctly, but be aware of this in other environments.
+- **No WAF**: This proxy doesn't inspect request bodies for SQL injection, XSS, etc. For that level of protection, consider Cloudflare or a dedicated WAF in front.
 
 ---
 
@@ -27,14 +48,10 @@ Everything else — the dashboard UI, all other API routes, and the Umami login 
 
 ### 1. Push this folder to a GitHub repo
 
-Or use Railway's "Deploy from GitHub" directly.
-
 ### 2. Add a new service in your Railway project
 
 In the same project where your Umami template is running:
-
-- Click **"+ New"** → **"GitHub Repo"** → select the repo with these files
-- Or use **"+ New"** → **"Docker Image"** if you've built and pushed it to a registry
+**"+ New"** → **"GitHub Repo"** → select the repo
 
 ### 3. Set environment variables on the proxy service
 
@@ -42,25 +59,21 @@ In the same project where your Umami template is running:
 |---|---|---|
 | `AUTH_USER` | Your chosen username | `admin` |
 | `AUTH_PASS` | A strong password | `s3cureP@ssw0rd!` |
-| `UMAMI_HOST` | Umami's **internal** Railway hostname + port | `umami.railway.internal:3000` |
-| `PORT` | Must be `8080` (matches nginx listen) | `8080` |
+| `UMAMI_HOST` | Umami's internal hostname + port | `umami.railway.internal:8080` |
+| `PORT` | Must be `8080` | `8080` |
 
-> **Finding UMAMI_HOST:** In your Railway project, click on the Umami service → Settings → Networking. The internal DNS name will look like `umami.railway.internal`. Umami's default port is `3000`.
+> **Finding UMAMI_HOST:** Click on the Umami service → Settings → Networking. Check the private DNS name and the port Umami is listening on (visible in Umami's deploy logs, e.g. `http://[::]:8080`).
 
 ### 4. Configure networking
 
 **On the proxy service:**
-- Go to Settings → Networking → **Generate Domain** (this becomes your public URL)
+- Settings → Networking → **Generate Domain** (public URL)
 
 **On the Umami service:**
-- Go to Settings → Networking → **Remove the public domain** (if one exists)
-- Make sure **Private Networking** is enabled (it is by default)
-
-Now the only way to reach Umami from the internet is through the proxy.
+- Settings → Networking → **Remove the public domain**
+- Ensure **Private Networking** is enabled
 
 ### 5. Update your tracking script
-
-On your websites, update the Umami script tag to point to the proxy's public domain:
 
 ```html
 <script defer src="https://your-proxy.up.railway.app/script.js"
@@ -79,5 +92,3 @@ docker run -p 8080:8080 \
   -e UMAMI_HOST=host.docker.internal:3000 \
   umami-proxy
 ```
-
-Then visit `http://localhost:8080` — you should get a browser auth prompt.
